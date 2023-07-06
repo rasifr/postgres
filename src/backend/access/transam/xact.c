@@ -320,6 +320,8 @@ typedef struct SubXactCallbackItem
 
 static SubXactCallbackItem *SubXact_callbacks = NULL;
 
+/* Hook for plugins to get control at the transaction start */
+XactBegin_hook_type xact_begin_hook = NULL;
 
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
@@ -718,6 +720,10 @@ AssignTransactionId(TransactionState s)
 	XactLockTableInsert(XidFromFullTransactionId(s->fullTransactionId));
 
 	CurrentResourceOwner = currentOwner;
+
+	/* execute callback, if any */
+	if (xact_begin_hook)
+		xact_begin_hook();
 
 	/*
 	 * Every PGPROC_MAX_CACHED_SUBXIDS assigned transaction ids within each

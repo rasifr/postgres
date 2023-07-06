@@ -425,6 +425,9 @@ typedef struct xl_xact_parsed_abort
 	TimestampTz origin_timestamp;
 } xl_xact_parsed_abort;
 
+/* Hook for plugins to get control at the transaction start */
+typedef void (*XactBegin_hook_type) (void);
+extern PGDLLIMPORT XactBegin_hook_type xact_begin_hook;
 
 /* ----------------
  *		extern definitions
