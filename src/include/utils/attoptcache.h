@@ -21,6 +21,8 @@ typedef struct AttributeOpts
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	float8		n_distinct;
 	float8		n_distinct_inherited;
+	bool		log_old_value;
+	bool		invisible;
 } AttributeOpts;
 
 AttributeOpts *get_attribute_options(Oid spcid, int attnum);

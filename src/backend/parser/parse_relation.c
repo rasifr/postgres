@@ -31,6 +31,7 @@
 #include "parser/parse_type.h"
 #include "parser/parsetree.h"
 #include "storage/lmgr.h"
+#include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -3172,11 +3173,17 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
 		char	   *label = strVal(lfirst(name));
 		Var		   *varnode = (Var *) lfirst(var);
 		TargetEntry *te;
+		AttributeOpts *opts;
 
 		te = makeTargetEntry((Expr *) varnode,
 							 (AttrNumber) pstate->p_next_resno++,
 							 label,
 							 false);
+		opts = get_attribute_options(rte->relid, varnode->varattno);
+
+		if (opts && opts->invisible)
+			te->resjunk = true;
+
 		te_list = lappend(te_list, te);
 
 		/* Require read access to each column */

@@ -64,6 +64,7 @@
 #include "storage/smgr.h"
 #include "storage/spin.h"
 #include "storage/standby.h"
+#include "utils/attoptcache.h"
 #include "utils/datum.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -78,6 +79,7 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer newbuf, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tuple,
 								  bool all_visible_cleared, bool new_all_visible_cleared);
+static Bitmapset *HeapDetermineLogOldColumns(Relation relation);
 static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
 										   Bitmapset *interesting_cols,
 										   Bitmapset *external_cols,
@@ -109,6 +111,7 @@ static void index_delete_sort(TM_IndexDeleteOp *delstate);
 static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation rel, HeapTuple tup, bool key_required,
+										Bitmapset *logged_old_attrs,
 										bool *copy);
 
 
@@ -2971,7 +2974,7 @@ l1:
 	 * Compute replica identity tuple before entering the critical section so
 	 * we don't PANIC upon a memory allocation failure.
 	 */
-	old_key_tuple = ExtractReplicaIdentity(relation, &tp, true, &old_key_copied);
+	old_key_tuple = ExtractReplicaIdentity(relation, &tp, true, NULL, &old_key_copied);
 
 	/*
 	 * If this is the first possibly-multixact-able operation in the current
@@ -3202,6 +3205,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
 	Bitmapset  *modified_attrs;
+	Bitmapset  *logged_old_attrs;
 	ItemId		lp;
 	HeapTupleData oldtup;
 	HeapTuple	heaptup;
@@ -3333,6 +3337,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
 											  id_attrs, &oldtup,
 											  newtup, &id_has_external);
+	logged_old_attrs = HeapDetermineLogOldColumns(relation);
 
 	/*
 	 * If we're not updating any "key" column, we can grab a weaker lock type.
@@ -3604,6 +3609,7 @@ l2:
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		bms_free(modified_attrs);
+		bms_free(logged_old_attrs);
 		bms_free(interesting_attrs);
 		return result;
 	}
@@ -3941,6 +3947,7 @@ l2:
 	old_key_tuple = ExtractReplicaIdentity(relation, &oldtup,
 										   bms_overlap(modified_attrs, id_attrs) ||
 										   id_has_external,
+										   logged_old_attrs,
 										   &old_key_copied);
 
 	/* NO EREPORT(ERROR) from here till changes are logged */
@@ -4090,6 +4097,7 @@ l2:
 	bms_free(key_attrs);
 	bms_free(id_attrs);
 	bms_free(modified_attrs);
+	bms_free(logged_old_attrs);
 	bms_free(interesting_attrs);
 
 	return TM_Ok;
@@ -4138,6 +4146,26 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 		att = TupleDescAttr(tupdesc, attrnum - 1);
 		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
 	}
+}
+
+static Bitmapset *
+HeapDetermineLogOldColumns(Relation relation)
+{
+	int				attnum;
+	Bitmapset	   *logged_cols = NULL;
+	TupleDesc		tupdesc = RelationGetDescr(relation);
+	AttributeOpts  *aopt;
+
+	for (attnum = 1; attnum <= tupdesc->natts; attnum++)
+	{
+		aopt = get_attribute_options(relation->rd_id, attnum);
+		if (aopt != NULL && aopt->log_old_value)
+			logged_cols = bms_add_member(logged_cols,
+										 attnum -
+										 FirstLowInvalidHeapAttributeNumber);
+	}
+
+	return logged_cols;
 }
 
 /*
@@ -8408,6 +8436,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
  */
 static HeapTuple
 ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
+					   Bitmapset *logged_old_attrs,
 					   bool *copy)
 {
 	TupleDesc	desc = RelationGetDescr(relation);
@@ -8440,12 +8469,15 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 	}
 
 	/* if the key isn't required and we're only logging the key, we're done */
-	if (!key_required)
+	if (!key_required && logged_old_attrs == NULL)
 		return NULL;
 
 	/* find out the replica identity columns */
 	idattrs = RelationGetIndexAttrBitmap(relation,
 										 INDEX_ATTR_BITMAP_IDENTITY_KEY);
+
+	/* merge the columns that are marked LOG_OLD_VALUE */
+	idattrs = bms_union(idattrs, logged_old_attrs);
 
 	/*
 	 * If there's no defined replica identity columns, treat as !key_required.

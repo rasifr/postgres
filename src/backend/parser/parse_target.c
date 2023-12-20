@@ -27,6 +27,7 @@
 #include "parser/parse_target.h"
 #include "parser/parse_type.h"
 #include "parser/parsetree.h"
+#include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -1025,10 +1026,16 @@ checkInsertTargets(ParseState *pstate, List *cols, List **attrnos)
 		{
 			ResTarget  *col;
 			Form_pg_attribute attr;
+			AttributeOpts *opts;
 
 			attr = TupleDescAttr(pstate->p_target_relation->rd_att, i);
 
 			if (attr->attisdropped)
+				continue;
+
+			opts = get_attribute_options(RelationGetRelid(pstate->p_target_relation), i+1);
+
+			if (opts && opts->invisible)
 				continue;
 
 			col = makeNode(ResTarget);
