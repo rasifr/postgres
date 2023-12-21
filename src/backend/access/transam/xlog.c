@@ -5128,6 +5128,17 @@ LocalProcessControlFile(bool reset)
 }
 
 /*
+ * Get the wal_level from the control file. For a standby, this value should be
+ * considered as its active wal_level, because it may be different from what
+ * was originally configured on standby.
+ */
+WalLevel
+GetActiveWalLevelOnStandby(void)
+{
+	return ControlFile->wal_level;
+}
+
+/*
  * Initialization of shared memory for XLOG
  */
 Size
@@ -8728,6 +8739,19 @@ GetFlushRecPtr(void)
 	SpinLockRelease(&XLogCtl->info_lck);
 
 	return LogwrtResult.Flush;
+}
+
+/*
+ * GetWALInsertionTimeLine -- Returns the current timeline of a system that
+ * is not in recovery.
+ */
+TimeLineID
+GetWALInsertionTimeLine(void)
+{
+	Assert(XLogCtl->SharedRecoveryState == RECOVERY_STATE_DONE);
+
+	/* Since the value can't be changing, no lock is required. */
+	return XLogCtl->ThisTimeLineID;
 }
 
 /*
