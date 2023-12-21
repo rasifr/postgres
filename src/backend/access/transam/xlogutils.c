@@ -684,7 +684,8 @@ XLogTruncateRelation(RelFileNode rnode, ForkNumber forkNum,
  * GetXLogReplayRecPtr and must check RecoveryInProgress().
  */
 void
-XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage, uint32 wantLength)
+XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage,
+						  uint32 wantLength, TimeLineID currTLI)
 {
 	const XLogRecPtr lastReadPage = (state->seg.ws_segno *
 									 state->segcxt.ws_segsize + state->segoff);
@@ -692,6 +693,7 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage, uint32 wa
 	Assert(wantPage != InvalidXLogRecPtr && wantPage % XLOG_BLCKSZ == 0);
 	Assert(wantLength <= XLOG_BLCKSZ);
 	Assert(state->readLen == 0 || state->readLen <= XLOG_BLCKSZ);
+	Assert(currTLI != 0);
 
 	/*
 	 * If the desired page is currently read in and valid, we have nothing to
@@ -717,7 +719,7 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage, uint32 wa
 	 * it looked up the timeline. There's nothing we can do about it if
 	 * StartupXLOG() renames it to .partial concurrently.
 	 */
-	if (state->currTLI == ThisTimeLineID && wantPage >= lastReadPage)
+	if (state->currTLI == currTLI && wantPage >= lastReadPage)
 	{
 		Assert(state->currTLIValidUntil == InvalidXLogRecPtr);
 		return;
@@ -729,7 +731,7 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage, uint32 wa
 	 * the current segment we can just keep reading.
 	 */
 	if (state->currTLIValidUntil != InvalidXLogRecPtr &&
-		state->currTLI != ThisTimeLineID &&
+		state->currTLI != currTLI &&
 		state->currTLI != 0 &&
 		((wantPage + wantLength) / state->segcxt.ws_segsize) <
 		(state->currTLIValidUntil / state->segcxt.ws_segsize))
@@ -752,7 +754,7 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage, uint32 wa
 		 * We need to re-read the timeline history in case it's been changed
 		 * by a promotion or replay from a cascaded replica.
 		 */
-		List	   *timelineHistory = readTimeLineHistory(ThisTimeLineID);
+		List	   *timelineHistory = readTimeLineHistory(currTLI);
 		XLogRecPtr	endOfSegment;
 
 		endOfSegment = ((wantPage / state->segcxt.ws_segsize) + 1) *
@@ -877,7 +879,7 @@ read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
 		 * standby whose primary gets promoted while we're decoding, so a
 		 * one-off ERROR isn't too bad.
 		 */
-		XLogReadDetermineTimeline(state, targetPagePtr, reqLen);
+		XLogReadDetermineTimeline(state, targetPagePtr, reqLen, tli);
 
 		if (state->currTLI == ThisTimeLineID)
 		{
