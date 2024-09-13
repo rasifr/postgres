@@ -96,6 +96,13 @@ extern PGDLLIMPORT bool bsysscan;
 extern PGDLLIMPORT int MyXactFlags;
 
 /*
+ * Spock:
+ * Incoming remote commit timestamp used in our monotonically increasing
+ * logical clock.
+ */
+extern PGDLLIMPORT TimestampTz remoteTransactionStopTimestamp;
+
+/*
  * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
  * We don't allow PREPARE TRANSACTION in that case.
  */

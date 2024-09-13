@@ -1,3 +1,4 @@
+
 /*
  * commit_ts.h
  *
@@ -16,6 +17,21 @@
 #include "replication/origin.h"
 #include "storage/sync.h"
 
+/*
+ * pgEdge requires to override the CommitTimestampEntry for individual
+ * subtransactions in the case that delta-apply needs to override losing
+ * last-update-wins. spock_apply_heap will then perform this (rare)
+ * update in a subtransaction so that this individual row gets its own
+ * xmin. By overriding this xid's CommitTsData the row can retain its
+ * original CommitTsData and not assume that of the overall replication
+ * transaction.
+ */
+typedef struct SubTransactionCommitTsEntry
+{
+	TransactionId	xid;
+	TimestampTz		time;
+	RepOriginId		nodeid;
+} SubTransactionCommitTsEntry;
 
 extern PGDLLIMPORT bool track_commit_timestamp;
 
@@ -26,6 +42,9 @@ extern bool TransactionIdGetCommitTsData(TransactionId xid,
 										 TimestampTz *ts, RepOriginId *nodeid);
 extern TransactionId GetLatestCommitTsData(TimestampTz *ts,
 										   RepOriginId *nodeid);
+extern void SubTransactionIdSetCommitTsData(TransactionId xid,
+											TimestampTz ts,
+											RepOriginId nodeid);
 
 extern Size CommitTsShmemSize(void);
 extern void CommitTsShmemInit(void);
@@ -45,6 +64,7 @@ extern int	committssyncfiletag(const FileTag *ftag, char *path);
 /* XLOG stuff */
 #define COMMIT_TS_ZEROPAGE		0x00
 #define COMMIT_TS_TRUNCATE		0x10
+#define COMMIT_TS_SUBTRANS_TS	0x20
 
 typedef struct xl_commit_ts_set
 {

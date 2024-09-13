@@ -196,6 +196,18 @@ typedef enum WALAvailability
 struct XLogRecData;
 struct XLogReaderState;
 
+/*
+ * Spock:
+ * Hook called from inside of holding the lock that determines
+ * the LSN order of commit records. We use this to ensure that
+ * commit timestamps are monotonically increasing in their LSN
+ * order.
+ */
+typedef void (*XLogReserveInsertHookType)(void *data);
+extern XLogReserveInsertHookType XLogReserveInsertHook;
+extern void *XLogReserveInsertHookData;
+extern bool XLogReserveInsertHookModifiedRecord;
+
 extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
 								   XLogRecPtr fpw_lsn,
 								   uint8 flags,
@@ -265,6 +277,14 @@ extern void ReachedEndOfBackup(XLogRecPtr EndRecPtr, TimeLineID tli);
 extern void SetInstallXLogFileSegmentActive(void);
 extern bool IsInstallXLogFileSegmentActive(void);
 extern void XLogShutdownWalRcv(void);
+
+/*
+ * Spock:
+ * Functions to access the last commit Lamport timestamp held in
+ * XLogCtl.
+ */
+extern TimestampTz XLogGetLastTransactionStopTimestamp(void);
+extern void XLogSetLastTransactionStopTimestamp(TimestampTz tz);
 
 /*
  * Routines to start, stop, and get status of a base backup.

@@ -134,6 +134,15 @@ static TransactionId *ParallelCurrentXids;
 int			MyXactFlags;
 
 /*
+ * Spock:
+ * Incoming remote commit timestamp used in our monotonically increasing
+ * logical clock. This will be set by a logical replication apply worker
+ * to bump our local logical clock forward in case we receive a remote
+ * transaction that appears to have happened in the future.
+ */
+TimestampTz	remoteTransactionStopTimestamp = 0;
+
+/*
  *	transaction states - transaction state from server perspective
  */
 typedef enum TransState
@@ -367,6 +376,13 @@ static void ShowTransactionState(const char *str);
 static void ShowTransactionStateRec(const char *str, TransactionState s);
 static const char *BlockStateAsString(TBlockState blockState);
 static const char *TransStateAsString(TransState state);
+
+/*
+ * Spock:
+ * Hook function to be called while holding the WAL insert spinlock
+ * to adjust commit timestamps via Lamport clock if needed.
+ */
+static void EnsureMonotonicTransactionStopTimestamp(void *data);
 
 
 /* ----------------------------------------------------------------
@@ -2149,6 +2165,13 @@ StartTransaction(void)
 	xactStopTimestamp = 0;
 
 	/*
+	 * Spock:
+	 * Reset the remoteTransactionStopTimestamp in case we are a
+	 * replication apply worker.
+	 */
+	remoteTransactionStopTimestamp = 0;
+
+	/*
 	 * initialize other subsystems for new transaction
 	 */
 	AtStart_GUC();
@@ -2164,6 +2187,13 @@ StartTransaction(void)
 	/* Schedule transaction timeout */
 	if (TransactionTimeout > 0)
 		enable_timeout_after(TRANSACTION_TIMEOUT, TransactionTimeout);
+
+	/*
+	 * Spock:
+	 * Reset XLogReserveInsertHook
+	 */
+	XLogReserveInsertHook = NULL;
+	XLogReserveInsertHookData = NULL;
 
 	ShowTransactionState("StartTransaction");
 }
@@ -5768,6 +5798,7 @@ XactLogCommitRecord(TimestampTz commit_time,
 	xl_xact_twophase xl_twophase;
 	xl_xact_origin xl_origin;
 	uint8		info;
+	XLogRecPtr	result;
 
 	Assert(CritSectionCount > 0);
 
@@ -5911,7 +5942,20 @@ XactLogCommitRecord(TimestampTz commit_time,
 	/* we allow filtering by xacts */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-	return XLogInsert(RM_XACT_ID, info);
+	/*
+	 * Spock:
+	 * Install our hook for the call to XLogInsert() so that we can
+	 * modify the xactStopTimestamp and the xact_time of the xlrec
+	 * while holding the lock that determines the commit-LSN to ensure
+	 * the commit timestamps are monotonically increasing.
+	 */
+	XLogReserveInsertHook = EnsureMonotonicTransactionStopTimestamp;
+	XLogReserveInsertHookData = (void *)&xlrec;
+	result = XLogInsert(RM_XACT_ID, info);
+	XLogReserveInsertHook = NULL;
+	XLogReserveInsertHookData = NULL;
+
+	return result;
 }
 
 /*
@@ -6381,4 +6425,61 @@ xact_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);
+}
+
+/*
+ * Spock:
+ * Hook function used in XactLogCommitRecord() to ensure that the
+ * commit timestamp is monotonically increasing in commit-LSN order.
+ */
+static void
+EnsureMonotonicTransactionStopTimestamp(void *data)
+{
+	xl_xact_commit	   *xlrec = (xl_xact_commit *)data;
+	TimestampTz			logical_clock;
+
+	logical_clock = XLogGetLastTransactionStopTimestamp();
+
+	if (remoteTransactionStopTimestamp != 0)
+	{
+		/*
+		 * We are committing a replication apply worker transaction.
+		 * In this case we only make sure that the logical clock is
+		 * max(logical_clock, new xact_time, remote_xact_time).
+		 * This is sufficient because the apply logic will use the
+		 * tracked remote timestamp or the delta apply tracking data
+		 * in the future, so no need to adjust the timestamp of the
+		 * replication transaction itself.
+		 */
+		if (xlrec->xact_time > logical_clock)
+			logical_clock = xlrec->xact_time;
+		if (remoteTransactionStopTimestamp > logical_clock)
+			logical_clock = remoteTransactionStopTimestamp;
+	}
+	else
+	{
+		/*
+		 * This is a local transaction. Make sure that the xact_time
+		 * higher than any timestamp we have seen thus far.
+		 *
+		 * TODO: This is not postmaster restart safe. If the local
+		 * system clock is further behind other nodes than it takes
+		 * for the postmaster to restart (time between it stops
+		 * accepting new transactions and time when it becomes ready
+		 * to accept new transactions), local transactions will not
+		 * be bumped into the future correctly.
+		 */
+		if (logical_clock >= xlrec->xact_time)
+		{
+			logical_clock++;
+			xlrec->xact_time = logical_clock;
+			xactStopTimestamp = logical_clock;
+
+			XLogReserveInsertHookModifiedRecord = true;
+		}
+		else
+			logical_clock = xlrec->xact_time;
+	}
+
+	XLogSetLastTransactionStopTimestamp(logical_clock);
 }

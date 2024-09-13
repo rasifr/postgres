@@ -166,6 +166,15 @@ static relopt_bool boolRelOpts[] =
 		},
 		true
 	},
+	{
+		{
+			"log_old_value",
+			"Add old value of attribute to WAL for logical decoding",
+			RELOPT_KIND_ATTRIBUTE,
+			ShareUpdateExclusiveLock
+		},
+		false
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -546,6 +555,19 @@ static relopt_enum enumRelOpts[] =
 
 static relopt_string stringRelOpts[] =
 {
+	{
+		{
+			"delta_apply_function",
+			"Function called to perform delta conflict avoidance",
+			RELOPT_KIND_ATTRIBUTE,
+			ShareUpdateExclusiveLock
+		},
+		-1,
+		true,
+		NULL,
+		NULL,
+		NULL
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -2070,7 +2092,9 @@ attribute_reloptions(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] = {
 		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
-		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)}
+		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
+		{"log_old_value", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, log_old_value)},
+		{"delta_apply_function", RELOPT_TYPE_STRING, offsetof(AttributeOpts, delta_apply_function)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,

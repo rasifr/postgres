@@ -267,17 +267,17 @@ retry:
 			case TM_Updated:
 				/* XXX: Improve handling here */
 				if (ItemPointerIndicatesMovedPartitions(&tmfd.ctid))
-					ereport(LOG,
+					ereport(DEBUG1,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("tuple to be locked was already moved to another partition due to concurrent update, retrying")));
 				else
-					ereport(LOG,
+					ereport(DEBUG1,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("concurrent update, retrying")));
 				goto retry;
 			case TM_Deleted:
 				/* XXX: Improve handling here */
-				ereport(LOG,
+				ereport(DEBUG1,
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 						 errmsg("concurrent delete, retrying")));
 				goto retry;
@@ -451,17 +451,17 @@ retry:
 			case TM_Updated:
 				/* XXX: Improve handling here */
 				if (ItemPointerIndicatesMovedPartitions(&tmfd.ctid))
-					ereport(LOG,
+					ereport(DEBUG1,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("tuple to be locked was already moved to another partition due to concurrent update, retrying")));
 				else
-					ereport(LOG,
+					ereport(DEBUG1,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("concurrent update, retrying")));
 				goto retry;
 			case TM_Deleted:
 				/* XXX: Improve handling here */
-				ereport(LOG,
+				ereport(DEBUG1,
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 						 errmsg("concurrent delete, retrying")));
 				goto retry;

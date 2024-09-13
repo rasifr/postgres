@@ -37,6 +37,13 @@ commit_ts_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "pageno %lld, oldestXid %u",
 						 (long long) trunc->pageno, trunc->oldestXid);
 	}
+	else if (info == COMMIT_TS_SUBTRANS_TS)
+	{
+		SubTransactionCommitTsEntry	*entry = (SubTransactionCommitTsEntry *)rec;
+
+		appendStringInfo(buf, "xid %u, time %ld, nodeid %d",
+						 entry->xid, entry->time, entry->nodeid);
+	}
 }
 
 const char *
@@ -48,6 +55,8 @@ commit_ts_identify(uint8 info)
 			return "ZEROPAGE";
 		case COMMIT_TS_TRUNCATE:
 			return "TRUNCATE";
+		case COMMIT_TS_SUBTRANS_TS:
+			return "SUBTRANS_TS";
 		default:
 			return NULL;
 	}

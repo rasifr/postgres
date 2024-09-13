@@ -155,6 +155,16 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
  */
 int			CheckPointSegments;
 
+/*
+ * Spock:
+ * Hook used to ensure commit timestamps are monotonically increasing
+ * in commit-LSN order and a flag that the tells if the hook changed
+ * the record itself requiring to correct the CRC.
+ */
+XLogReserveInsertHookType	XLogReserveInsertHook = NULL;
+void					   *XLogReserveInsertHookData = NULL;
+bool						XLogReserveInsertHookModifiedRecord = false;
+
 /* Estimated distance between checkpoints, in bytes */
 static double CheckPointDistanceEstimate = 0;
 static double PrevCheckPointDistance = 0;
@@ -546,6 +556,14 @@ typedef struct XLogCtlData
 	XLogRecPtr	lastFpwDisableRecPtr;
 
 	slock_t		info_lck;		/* locks shared variables shown above */
+
+	/*
+	 * Spock:
+	 * This is our shared, logical clock that we use to force
+	 * commit timestamps to be monotonically increasing in
+	 * commit-LSN order.
+	 */
+	TimestampTz	lastTransactionStopTimestamp;
 } XLogCtlData;
 
 /*
@@ -695,6 +713,7 @@ static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
 								XLogRecData *rdata,
 								XLogRecPtr StartPos, XLogRecPtr EndPos,
 								TimeLineID tli);
+static void XLogRecordCorrectCRC(XLogRecData *rdata);
 static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
 									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
 static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
@@ -772,6 +791,13 @@ XLogInsertRecord(XLogRecData *rdata,
 	/* cross-check on whether we should be here or not */
 	if (!XLogInsertAllowed())
 		elog(ERROR, "cannot make new WAL entries during recovery");
+
+	/*
+	 * Spock:
+	 * Make sure the flag telling that ReserveXLog...() modified the
+	 * record is false at this point.
+	 */
+	XLogReserveInsertHookModifiedRecord = false;
 
 	/*
 	 * Given that we're not in recovery, InsertTimeLineID is set and can't
@@ -901,6 +927,17 @@ XLogInsertRecord(XLogRecData *rdata,
 
 	if (inserted)
 	{
+		/*
+		 * Spock:
+		 * If our logical_clock hook modified the XLog Record,
+		 * recalculate the CRC.
+		 */
+		if (XLogReserveInsertHookModifiedRecord)
+		{
+			XLogRecordCorrectCRC(rdata);
+			XLogReserveInsertHookModifiedRecord = false;
+		}
+
 		/*
 		 * Now that xl_prev has been filled in, calculate CRC of the record
 		 * header.
@@ -1082,6 +1119,27 @@ XLogInsertRecord(XLogRecData *rdata,
 }
 
 /*
+ * Spock:
+ * Function to recalculate the WAL Record's CRC in case it was
+ * altered to ensure a monotonically increasing commit timestamp
+ * in LSN order.
+ */
+static void
+XLogRecordCorrectCRC(XLogRecData *rdata)
+{
+	XLogRecData    *rdt;
+	XLogRecord	   *rechdr = (XLogRecord *)rdata->data;
+	pg_crc32c       rdata_crc;
+
+	INIT_CRC32C(rdata_crc);
+	COMP_CRC32C(rdata_crc, rdata->data + SizeOfXLogRecord, rdata->len - SizeOfXLogRecord);
+	for (rdt = rdata->next; rdt != NULL; rdt = rdt->next)
+		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
+
+	rechdr->xl_crc = rdata_crc;
+}
+
+/*
  * Reserves the right amount of space for a record of given size from the WAL.
  * *StartPos is set to the beginning of the reserved section, *EndPos to
  * its end+1. *PrevPtr is set to the beginning of the previous record; it is
@@ -1124,6 +1182,13 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 	 * X bytes from WAL is almost as simple as "CurrBytePos += X".
 	 */
 	SpinLockAcquire(&Insert->insertpos_lck);
+
+	/*
+	 * Spock:
+	 * If set call the XLogReserveInsertHook function
+	 */
+	if (XLogReserveInsertHook != NULL)
+		XLogReserveInsertHook(XLogReserveInsertHookData);
 
 	startbytepos = Insert->CurrBytePos;
 	endbytepos = startbytepos + size;
@@ -1183,6 +1248,12 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
 		*EndPos = *StartPos = ptr;
 		return false;
 	}
+
+	/* Spock:
+	 * If set call the XLogReserveInsertHook function
+	 */
+	if (XLogReserveInsertHook != NULL)
+		XLogReserveInsertHook(XLogReserveInsertHookData);
 
 	endbytepos = startbytepos + size;
 	prevbytepos = Insert->PrevBytePos;
@@ -9441,4 +9512,16 @@ SetWalWriterSleeping(bool sleeping)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->WalWriterSleeping = sleeping;
 	SpinLockRelease(&XLogCtl->info_lck);
+}
+
+extern TimestampTz
+XLogGetLastTransactionStopTimestamp(void)
+{
+	return XLogCtl->lastTransactionStopTimestamp;
+}
+
+extern void
+XLogSetLastTransactionStopTimestamp(TimestampTz ts)
+{
+	XLogCtl->lastTransactionStopTimestamp = ts;
 }
