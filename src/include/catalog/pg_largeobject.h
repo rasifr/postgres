@@ -47,7 +47,21 @@ typedef FormData_pg_largeobject *Form_pg_largeobject;
 DECLARE_UNIQUE_INDEX_PKEY(pg_largeobject_loid_pn_index, 2683, LargeObjectLOidPNIndexId, pg_largeobject, btree(loid oid_ops, pageno int4_ops));
 
 extern Oid	LargeObjectCreate(Oid loid);
-extern void LargeObjectDrop(Oid loid);
-extern bool LargeObjectExists(Oid loid);
+extern void LargeObjectDrop(Oid classId, Oid loid);
+extern bool LargeObjectExists(Oid classId, Oid loid);
+
+/* ----------------
+ * Core changes for LOLOR (large objects logical replication) support.
+ * ----------------
+ */
+#define LOLOR_EXTENSION_NAME			"lolor"
+#define LOLOR_LARGEOBJECT_CATALOG		"pg_largeobject"
+#define LOLOR_LARGEOBJECT_PKEY			"pg_largeobject_pkey"
+#define LOLOR_LARGEOBJECT_METADATA		"pg_largeobject_metadata"
+#define LOLOR_LARGEOBJECT_METADATA_PKEY	"pg_largeobject_metadata_pkey"
+
+extern Oid get_lobj_table_oid(const char *table, bool missing_ok);
+extern bool IsLolorObjectClassId(Oid classId);
+extern bool IsLolorObject(void);
 
 #endif							/* PG_LARGEOBJECT_H */

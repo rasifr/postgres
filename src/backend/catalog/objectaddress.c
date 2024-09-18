@@ -1046,7 +1046,10 @@ get_object_address(ObjectType objtype, Node *object,
 				address.classId = LargeObjectRelationId;
 				address.objectId = oidparse(object);
 				address.objectSubId = 0;
-				if (!LargeObjectExists(address.objectId))
+
+				if (IsLolorObject())
+					address.classId = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA, false);
+				if (!LargeObjectExists(address.classId, address.objectId))
 				{
 					if (!missing_ok)
 						ereport(ERROR,
@@ -2762,6 +2765,20 @@ get_object_property_data(Oid class_id)
 			prop_last = &ObjectProperty[index];
 			return &ObjectProperty[index];
 		}
+
+		if (ObjectProperty[index].class_oid == LargeObjectMetadataRelationId &&
+			IsLolorObjectClassId(class_id))
+		{
+			ObjectPropertyType *opt = palloc0(sizeof(ObjectPropertyType));
+
+			memcpy(opt, &ObjectProperty[index], sizeof(ObjectPropertyType));
+			opt->class_oid = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA, false);
+			opt->oid_index_oid = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA_PKEY, false);
+			opt->oid_catcache_id = 0;
+			opt->name_catcache_id = 0;
+
+			return opt;
+		}
 	}
 
 	ereport(ERROR,
@@ -3106,7 +3123,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 			}
 
 		case LargeObjectRelationId:
-			if (!LargeObjectExists(object->objectId))
+			if (!LargeObjectExists(object->classId, object->objectId))
 				break;
 			appendStringInfo(&buffer, _("large object %u"),
 							 object->objectId);
@@ -4013,6 +4030,14 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 			}
 
 		default:
+			if (IsLolorObjectClassId(object->classId))
+			{
+				if (!LargeObjectExists(object->classId, object->objectId))
+					break;
+				appendStringInfo(&buffer, _("large object %u"),
+							 object->objectId);
+			}
+
 			elog(ERROR, "unsupported object class: %u", object->classId);
 	}
 
@@ -4982,7 +5007,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 			}
 
 		case LargeObjectRelationId:
-			if (!LargeObjectExists(object->objectId))
+			if (!LargeObjectExists(object->classId, object->objectId))
 				break;
 			appendStringInfo(&buffer, "%u",
 							 object->objectId);

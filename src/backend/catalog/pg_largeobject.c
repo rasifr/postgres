@@ -17,13 +17,16 @@
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/table.h"
+#include "commands/extension.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_largeobject.h"
 #include "catalog/pg_largeobject_metadata.h"
+#include "catalog/namespace.h"
 #include "miscadmin.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/lsyscache.h"
 
 
 /*
@@ -80,18 +83,28 @@ LargeObjectCreate(Oid loid)
  * and metadata must be dropped.
  */
 void
-LargeObjectDrop(Oid loid)
+LargeObjectDrop(Oid classId, Oid loid)
 {
 	Relation	pg_lo_meta;
 	Relation	pg_largeobject;
 	ScanKeyData skey[1];
 	SysScanDesc scan;
 	HeapTuple	tuple;
+	Oid			lomclassId = LargeObjectMetadataRelationId;
+	Oid			loIdx = LargeObjectLOidPNIndexId;
+	Oid			lomIdx = LargeObjectMetadataOidIndexId;
 
-	pg_lo_meta = table_open(LargeObjectMetadataRelationId,
+	if (classId != LargeObjectRelationId)
+	{
+		lomclassId = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA, false);
+		loIdx = get_lobj_table_oid(LOLOR_LARGEOBJECT_PKEY, false);
+		lomIdx = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA_PKEY, false);
+	}
+
+	pg_lo_meta = table_open(lomclassId,
 							RowExclusiveLock);
 
-	pg_largeobject = table_open(LargeObjectRelationId,
+	pg_largeobject = table_open(classId,
 								RowExclusiveLock);
 
 	/*
@@ -103,7 +116,7 @@ LargeObjectDrop(Oid loid)
 				ObjectIdGetDatum(loid));
 
 	scan = systable_beginscan(pg_lo_meta,
-							  LargeObjectMetadataOidIndexId, true,
+							  lomIdx, true,
 							  NULL, 1, skey);
 
 	tuple = systable_getnext(scan);
@@ -125,7 +138,7 @@ LargeObjectDrop(Oid loid)
 				ObjectIdGetDatum(loid));
 
 	scan = systable_beginscan(pg_largeobject,
-							  LargeObjectLOidPNIndexId, true,
+							  loIdx, true,
 							  NULL, 1, skey);
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
@@ -152,24 +165,29 @@ LargeObjectDrop(Oid loid)
  * relative to a current snapshot).
  */
 bool
-LargeObjectExists(Oid loid)
+LargeObjectExists(Oid lomclassId, Oid loid)
 {
 	Relation	pg_lo_meta;
 	ScanKeyData skey[1];
 	SysScanDesc sd;
 	HeapTuple	tuple;
 	bool		retval = false;
+	Oid			lomIdx = LargeObjectMetadataOidIndexId;
+
+	if (lomclassId != LargeObjectRelationId ||
+		lomclassId != LargeObjectMetadataRelationId)
+		lomIdx = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA_PKEY, false);
 
 	ScanKeyInit(&skey[0],
 				Anum_pg_largeobject_metadata_oid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(loid));
 
-	pg_lo_meta = table_open(LargeObjectMetadataRelationId,
+	pg_lo_meta = table_open(lomclassId,
 							AccessShareLock);
 
 	sd = systable_beginscan(pg_lo_meta,
-							LargeObjectMetadataOidIndexId, true,
+							lomIdx, true,
 							NULL, 1, skey);
 
 	tuple = systable_getnext(sd);
@@ -181,4 +199,48 @@ LargeObjectExists(Oid loid)
 	table_close(pg_lo_meta, AccessShareLock);
 
 	return retval;
+}
+
+Oid
+get_lobj_table_oid(const char *table, bool missing_ok)
+{
+	Oid			reloid = InvalidOid;
+	Oid			nspoid = InvalidOid;
+
+	nspoid = get_namespace_oid(LOLOR_EXTENSION_NAME, missing_ok);
+
+	if (!OidIsValid(nspoid) && missing_ok)
+		return InvalidOid;
+
+	reloid = get_relname_relid(table, nspoid);
+	if (!OidIsValid(reloid) && !missing_ok)
+		elog(ERROR, "cache lookup failed for relation %s.%s",
+			 LOLOR_EXTENSION_NAME, table);
+
+	return reloid;
+}
+
+bool
+IsLolorObjectClassId(Oid classId)
+{
+	Oid id = InvalidOid;
+
+	id = get_lobj_table_oid(LOLOR_LARGEOBJECT_CATALOG, true);
+	if (OidIsValid(id) && id == classId)
+		return true;
+
+	id = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA, true);
+	if (OidIsValid(id) && id == classId)
+		return true;
+
+	return false;
+}
+
+bool
+IsLolorObject()
+{
+	if (OidIsValid(get_extension_oid(LOLOR_EXTENSION_NAME, true)))
+		return true;
+
+	return false;
 }

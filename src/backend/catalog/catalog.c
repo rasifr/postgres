@@ -31,6 +31,7 @@
 #include "catalog/pg_database.h"
 #include "catalog/pg_db_role_setting.h"
 #include "catalog/pg_largeobject.h"
+#include "catalog/pg_largeobject_metadata.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_parameter_acl.h"
 #include "catalog/pg_replication_origin.h"
@@ -132,6 +133,7 @@ IsCatalogRelationOid(Oid relid)
 	 * This test is reliable since an OID wraparound will skip this range of
 	 * OIDs; see GetNewObjectId().
 	 */
+
 	return (relid < (Oid) FirstUnpinnedObjectId);
 }
 
@@ -345,7 +347,8 @@ IsPinnedObject(Oid classId, Oid objectId)
 	 * Large objects are never pinned.  We need this special case because
 	 * their OIDs can be user-assigned.
 	 */
-	if (classId == LargeObjectRelationId)
+	if (classId == LargeObjectRelationId ||
+		IsLolorObjectClassId(classId))
 		return false;
 
 	/*

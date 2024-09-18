@@ -43,6 +43,7 @@
 #include "catalog/pg_init_privs.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_largeobject.h"
+#include "catalog/pg_largeobject_metadata.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
@@ -1401,7 +1402,7 @@ doDeletion(const ObjectAddress *object, int flags)
 			break;
 
 		case LargeObjectRelationId:
-			LargeObjectDrop(object->objectId);
+			LargeObjectDrop(LargeObjectRelationId, object->objectId);
 			break;
 
 		case OperatorRelationId:
@@ -1479,7 +1480,14 @@ doDeletion(const ObjectAddress *object, int flags)
 			break;
 
 		default:
+		{
+			if (IsLolorObjectClassId(object->classId))
+			{
+				LargeObjectDrop(object->classId, object->objectId);
+				return;
+			}
 			elog(ERROR, "unsupported object class: %u", object->classId);
+		}
 	}
 }
 

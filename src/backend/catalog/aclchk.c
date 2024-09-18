@@ -113,7 +113,7 @@ static void ExecGrant_Relation(InternalGrant *istmt);
 static void ExecGrant_common(InternalGrant *istmt, Oid classid, AclMode default_privs,
 							 void (*object_check) (InternalGrant *istmt, HeapTuple tuple));
 static void ExecGrant_Language_check(InternalGrant *istmt, HeapTuple tuple);
-static void ExecGrant_Largeobject(InternalGrant *istmt);
+static void ExecGrant_Largeobject(InternalGrant *istmt, Oid classId);
 static void ExecGrant_Type_check(InternalGrant *istmt, HeapTuple tuple);
 static void ExecGrant_Parameter(InternalGrant *istmt);
 
@@ -628,7 +628,10 @@ ExecGrantStmt_oids(InternalGrant *istmt)
 			ExecGrant_common(istmt, LanguageRelationId, ACL_ALL_RIGHTS_LANGUAGE, ExecGrant_Language_check);
 			break;
 		case OBJECT_LARGEOBJECT:
-			ExecGrant_Largeobject(istmt);
+			if (IsLolorObject())
+				ExecGrant_Largeobject(istmt, get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA, false));
+			else
+				ExecGrant_Largeobject(istmt, LargeObjectMetadataRelationId);
 			break;
 		case OBJECT_SCHEMA:
 			ExecGrant_common(istmt, NamespaceRelationId, ACL_ALL_RIGHTS_SCHEMA, NULL);
@@ -730,8 +733,11 @@ objectNamesToOids(ObjectType objtype, List *objnames, bool is_grant)
 			foreach(cell, objnames)
 			{
 				Oid			lobjOid = oidparse(lfirst(cell));
+				Oid			classid = LargeObjectMetadataRelationId;
 
-				if (!LargeObjectExists(lobjOid))
+				if (IsLolorObject())
+					classid = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA, false);
+				if (!LargeObjectExists(classid, lobjOid))
 					ereport(ERROR,
 							(errcode(ERRCODE_UNDEFINED_OBJECT),
 							 errmsg("large object %u does not exist",
@@ -1572,6 +1578,11 @@ RemoveRoleFromObjectACL(Oid roleid, Oid classid, Oid objid)
 				istmt.objtype = OBJECT_PARAMETER_ACL;
 				break;
 			default:
+				if (IsLolorObjectClassId(classid))
+				{
+					istmt.objtype = OBJECT_LARGEOBJECT;
+					break;
+				}
 				elog(ERROR, "unexpected object class %u", classid);
 				break;
 		}
@@ -2300,15 +2311,23 @@ ExecGrant_Language_check(InternalGrant *istmt, HeapTuple tuple)
 }
 
 static void
-ExecGrant_Largeobject(InternalGrant *istmt)
+ExecGrant_Largeobject(InternalGrant *istmt, Oid lomclassId)
 {
 	Relation	relation;
 	ListCell   *cell;
+	Oid			classId = LargeObjectRelationId;
+	Oid			lomIdx = LargeObjectMetadataOidIndexId;
 
 	if (istmt->all_privs && istmt->privileges == ACL_NO_RIGHTS)
 		istmt->privileges = ACL_ALL_RIGHTS_LARGEOBJECT;
 
-	relation = table_open(LargeObjectMetadataRelationId,
+	if (lomclassId != LargeObjectMetadataRelationId)
+	{
+		classId = get_lobj_table_oid(LOLOR_LARGEOBJECT_CATALOG, false);
+		lomIdx = get_lobj_table_oid(LOLOR_LARGEOBJECT_METADATA_PKEY, false);
+	}
+
+	relation = table_open(lomclassId,
 						  RowExclusiveLock);
 
 	foreach(cell, istmt->objects)
@@ -2343,7 +2362,7 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 					ObjectIdGetDatum(loid));
 
 		scan = systable_beginscan(relation,
-								  LargeObjectMetadataOidIndexId, true,
+								  lomIdx, true,
 								  NULL, 1, entry);
 
 		tuple = systable_getnext(scan);
@@ -2415,10 +2434,10 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple);
 
 		/* Update initial privileges for extensions */
-		recordExtensionInitPriv(loid, LargeObjectRelationId, 0, new_acl);
+		recordExtensionInitPriv(loid, classId, 0, new_acl);
 
 		/* Update the shared dependency ACL info */
-		updateAclDependencies(LargeObjectRelationId,
+		updateAclDependencies(classId,
 							  form_lo_meta->oid, 0,
 							  ownerId,
 							  noldmembers, oldmembers,
